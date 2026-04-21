@@ -1,1 +1,26 @@
 .DS_Store
+CLAUDE.md
+.env
+
+# Vendored / external repos
+Qwen3-Coder/
+ArcticTraining/
+
+# Data + weights (reproducible from README, too large to commit)
+mini_dev_data/
+checkpoints/
+finetuning/train_data/
+
+# Per-run artifacts
+logs/
+finetuning/inference/outputs/
+finetuning/data_processing/profiles/
+finetuning/data_processing/descriptions/
+
+# Python caches
+__pycache__/
+*.py[co]
+*.egg-info/
+.ipynb_checkpoints/
+
+scripts/sync_modal_secrets.sh

@@ -4,13 +4,13 @@ set -euo pipefail
 ########################
 # User configs
 ########################
-MODEL_PATH="/path/to/your/model-or-checkpoint"  
-PROMPT_JSONL="/path/to/dev_or_minidev_prompts.jsonl"  # provided dev or minidev set prompts
-OUT_DIR="./outputs/vllm_infer"                   
-GPU="0,1"                                        
+MODEL_PATH="/net/holy-isilon/ifs/rc_labs/ydu_lab/will/workspace/mini_dev/checkpoints/Qwen3-Coder-30B-A3B-Instruct"
+PROMPT_JSONL="/net/holy-isilon/ifs/rc_labs/ydu_lab/will/workspace/mini_dev/finetuning/inference/mini_dev_prompt.jsonl"
+OUT_DIR="./outputs/vllm_infer"
+GPU="0,1"
 
 BATCH_SIZE=50
-MAX_LEN=15000
+MAX_LEN=32000
 TEMP=0.0
 
 ########################

@@ -24,18 +24,20 @@ def process_bird_data(json_file, output_file):
     
     for idx, item in enumerate(tqdm(raw_data, desc="Processing data")):
         try:
-            # Check required fields
-            if not all(key in item for key in ['question', 'gt_sql', 'db_id']):
-                print(f"Skip sample {idx}: missing required fields")
+            if 'input_seq' not in item or not item.get('output_seq', item.get('response')):
+                print(f"Skip sample {idx}: missing input_seq/output_seq")
                 failed_count += 1
                 continue
-            
+
             prompt_content = item['input_seq']
             response_content = item.get('output_seq', item.get('response', ''))
-            # Build verl format data
+            # verl's MultiTurnSFTDataset expects a `messages` column of role/content dicts;
+            # it applies the target model's chat template itself at load time.
             verl_item = {
-                "prompt": prompt_content,
-                "response": response_content
+                "messages": [
+                    {"role": "user", "content": prompt_content},
+                    {"role": "assistant", "content": response_content},
+                ]
             }
             
             processed_data.append(verl_item)

@@ -10,15 +10,51 @@ from typing import List, Dict
 import torch
 from vllm import LLM, SamplingParams
 
-# ----------------------------
-# Helpers
-# ----------------------------
+
 def load_jsonl(path: str) -> List[Dict]:
     items = []
     with open(path, "r", encoding="utf-8") as f:
         for obj in jsonlines.Reader(f):
             items.append(obj)
     return items
+
+
+def _strip_evidence(prompt: str) -> str:
+    """Drop BIRD evidence lines from the Question block, keep only the final question."""
+    def repl(m):
+        block = m.group(1)
+        lines = [l for l in block.strip("\n").splitlines() if l.strip()]
+        question_only = lines[-1] if lines else ""
+        return f"Question:\n{question_only}\n\n"
+    return re.sub(r"Question:\n(.*?)\n\nInstructions:", lambda m: repl(m) + "Instructions:", prompt, flags=re.DOTALL)
+
+
+def _swap_profile_descriptions(prompt: str, profiles_dir: str, db_id: str) -> str:
+    """Stub: needs profile_db.py + describe_columns.py outputs in profiles_dir."""
+    raise NotImplementedError(
+        "profile mode requires profile_db.py + describe_columns.py to be run first "
+        "and descriptions/ to exist at --profiles_dir"
+    )
+
+
+def apply_metadata_mode(items: List[Dict], mode: str, profiles_dir: str = "") -> List[Dict]:
+    """Transform prompts per experiment mode: baseline / no_evidence / profile."""
+    if mode == "baseline":
+        return items
+    out = []
+    for it in items:
+        row = dict(it)
+        p = row["prompt"]
+        if mode == "no_evidence":
+            p = _strip_evidence(p)
+        elif mode == "profile":
+            assert profiles_dir, "profile mode requires --profiles_dir"
+            p = _swap_profile_descriptions(p, profiles_dir, row.get("db_id", ""))
+        else:
+            raise ValueError(f"unknown metadata_mode: {mode}")
+        row["prompt"] = p
+        out.append(row)
+    return out
 
 def write_jsonl(path: str, items: List[Dict]):
     with open(path, "w", encoding="utf-8") as f:
@@ -34,65 +70,29 @@ def batches(seq, bs):
     for i in range(0, len(seq), bs):
         yield seq[i:i+bs]
 
-# ----------------------------
-# SQL extraction 
-# ----------------------------
+
 def sql_response_extract(response_string):
-    """
-    1. Attempt to extract the first code block labeled with ```sqlite.
-    2. If none found, attempt to extract the first code block labeled with ```sql.
-    3. If none found in either, return an empty string.
+    """Extract SQL from a ```sqlite/sql/mysql/postgresql code block; fallback strips fences."""
+    sqlite_pattern = re.compile(r"```[ \t]*sqlite\s*([\s\S]*?)```", re.IGNORECASE)
+    mysql_pattern = re.compile(r"```[ \t]*mysql\s*([\s\S]*?)```", re.IGNORECASE)
+    postgresql_pattern = re.compile(r"```[ \t]*postgresql\s*([\s\S]*?)```", re.IGNORECASE)
+    sql_pattern = re.compile(r"```[ \t]*sql\s*([\s\S]*?)```", re.IGNORECASE)
 
-    Returns:
-        A single string (the SQL statement/code) or "" if none found.
-    """
-    # Pattern to match ```sqlite ... ```
-    sqlite_pattern = re.compile(
-        r"```[ \t]*sqlite\s*([\s\S]*?)```",  
-        re.IGNORECASE
-    )
-    # Pattern to match ```sqlite ... ```
-    mysql_pattern = re.compile(
-        r"```[ \t]*mysql\s*([\s\S]*?)```",  
-        re.IGNORECASE
-    )
-    postgresql_pattern = re.compile(
-        r"```[ \t]*postgresql\s*([\s\S]*?)```",  
-        re.IGNORECASE
-    )
-    # Pattern to match ```sql ... ```
-    sql_pattern = re.compile(
-        r"```[ \t]*sql\s*([\s\S]*?)```",
-        re.IGNORECASE
-    )
-
-    # 1) Try matching ```sqlite for the first block
-    match_sqlite = sqlite_pattern.search(response_string)
-    if match_sqlite:
-        # match_sqlite.group(1) contains the code between the backticks
-        return match_sqlite.group(1).strip()
-
-    # 2) If no sqlite block found, try matching ```sql
-    match_sql = sql_pattern.search(response_string)
-    if match_sql:
-        return match_sql.group(1).strip()
-
-    match_mysql = mysql_pattern.search(response_string)
-    if match_mysql:
-        return match_mysql.group(1).strip()
-
-    match_postgresql = postgresql_pattern.search(response_string)
-    if match_postgresql:
-        return match_postgresql.group(1).strip()
-
-    
-    # 3) If neither found, return an empty string
-    return response_string.replace("```sql","").replace("```sqlite","").replace("```","")
+    m = sqlite_pattern.search(response_string)
+    if m:
+        return m.group(1).strip()
+    m = sql_pattern.search(response_string)
+    if m:
+        return m.group(1).strip()
+    m = mysql_pattern.search(response_string)
+    if m:
+        return m.group(1).strip()
+    m = postgresql_pattern.search(response_string)
+    if m:
+        return m.group(1).strip()
+    return response_string.replace("```sql", "").replace("```sqlite", "").replace("```", "")
 
 
-# ----------------------------
-# Inference
-# ----------------------------
 def run_infer(
     model_path: str,
     prompt_items: List[Dict],
@@ -104,10 +104,12 @@ def run_infer(
     Returns raw generated texts aligned with prompt_items.
     Each prompt item must contain a 'prompt' string.
     """
-    # heuristic tp / util
+    # Heuristic tp_size / gpu_util by model name.
     mp = model_path.lower()
     if "72b" in mp or "70b" in mp:
         tp_size, gpu_util = 4, 0.95
+    elif "qwen3-coder-30b" in mp or "a3b" in mp:
+        tp_size, gpu_util = 1, 0.92
     elif "gemma3" in mp or "phi-4" in mp:
         tp_size, gpu_util = 2, 0.95
     else:
@@ -117,6 +119,7 @@ def run_infer(
         model=model_path,
         tensor_parallel_size=tp_size,
         trust_remote_code=True,
+        dtype="bfloat16",
         gpu_memory_utilization=gpu_util,
         max_model_len=max_model_len,
         disable_custom_all_reduce=True,
@@ -158,9 +161,7 @@ def run_infer(
 
     return generations
 
-# ----------------------------
-# Main: vLLM inference + postprocess
-# ----------------------------
+
 def main():
     ap = argparse.ArgumentParser("vLLM inference + SQL postprocess")
     ap.add_argument("--model_path", type=str, required=True)
@@ -172,12 +173,22 @@ def main():
     ap.add_argument("--batch_size", type=int, default=50)
     ap.add_argument("--max_token_length", type=int, default=15000)
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--metadata_mode", choices=["baseline", "no_evidence", "profile"],
+                    default="baseline",
+                    help="baseline=prompts as-is; no_evidence=strip BIRD evidence; "
+                         "profile=swap descriptions from --profiles_dir (not yet wired up)")
+    ap.add_argument("--profiles_dir", type=str, default="",
+                    help="Dir with {db_id}.json profile/description files (for --metadata_mode=profile)")
     args = ap.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     items = load_jsonl(args.prompt_path)
     assert len(items) > 0 and "prompt" in items[0], "Input must be JSONL with a 'prompt' field."
+
+    # Apply metadata-mode transform before tokenization.
+    items = apply_metadata_mode(items, args.metadata_mode, args.profiles_dir)
+    print(f"[metadata_mode={args.metadata_mode}] {len(items)} prompts ready")
 
     # 1) inference
     raw_texts = run_infer(

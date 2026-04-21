@@ -18,15 +18,7 @@ def load_jsonl(file_path):
             return json.load(file)
 
 def split_json_data(input_file, train_file, val_file, val_ratio=0.1):
-    """
-    Split JSON data into training and validation sets
-    
-    Args:
-        input_file: Input JSON file path
-        train_file: Training set output file path
-        val_file: Validation set output file path
-        val_ratio: Validation set ratio, default 0.1 (10%)
-    """
+    """Split JSON data by db_id into train/val files (val_ratio default 10%)."""
     
     # Load original data
     data = load_jsonl(input_file)
